@@ -6,7 +6,7 @@ from typing import Any
 
 from app.services.base import BaseModuleService
 from app.store import store
-from app.lake_store import lake_store
+from app.lake_store import LakeStore, lake_store
 
 
 class TimeTravelService(BaseModuleService):
@@ -19,39 +19,46 @@ class TimeTravelService(BaseModuleService):
     ACTION_RULES = {"发起查询": "执行中", "取消查询": "已返回", "标记失败": "执行失败"}
     NEGATIVE_ACTIONS = []
 
+    def __init__(self, engine: LakeStore | None = None) -> None:
+        # 灾备端用回导后的分区文件清单按原快照号读取；默认全局单例
+        self._engine = engine or lake_store
+
     def read_at_snapshot(self, lake_table: str, snapshot_id: str,
                          columns: list[str] | None = None) -> dict[str, Any]:
         """按指定快照 ID 读取历史数据并返回命中分区数和行数。"""
-        snap = lake_store.get_snapshot(lake_table, snapshot_id)
+        snap = self._engine.get_snapshot(lake_table, snapshot_id)
         if snap is None:
             return {"success": False, "error": "snapshot not found", "rows": 0, "partitions": 0}
         total_rows = 0
         partitions = set()
+        file_ids: list[str] = []
         for fid in snap.file_ids:
-            pf = lake_store.get_file(lake_table, fid)
+            pf = self._engine.get_file(lake_table, fid)
             if pf:
                 total_rows += pf.file_rows
                 partitions.add(pf.partition_key)
+                file_ids.append(pf.file_id)
         return {
             "success": True,
             "snapshot_id": snapshot_id,
             "rows": total_rows,
             "partition_count": len(partitions),
             "partitions_hit": sorted(partitions),
+            "file_ids": file_ids,
             "query_time": time.time(),
         }
 
     def read_at_timepoint(self, lake_table: str, timestamp: float) -> dict[str, Any]:
         """按时间点回溯查找最近可用快照并读取。"""
-        snap = lake_store.get_snapshot_at_time(lake_table, timestamp)
+        snap = self._engine.get_snapshot_at_time(lake_table, timestamp)
         if snap is None:
             return {"success": False, "error": "no available snapshot at time", "rows": 0, "partitions": 0}
         return self.read_at_snapshot(lake_table, snap.snapshot_id)
 
     def compare_two_snapshots(self, lake_table: str, snap_a: str, snap_b: str) -> dict[str, Any]:
         """比较两个快照间的数据差异。"""
-        s_a = lake_store.get_snapshot(lake_table, snap_a)
-        s_b = lake_store.get_snapshot(lake_table, snap_b)
+        s_a = self._engine.get_snapshot(lake_table, snap_a)
+        s_b = self._engine.get_snapshot(lake_table, snap_b)
         if not s_a or not s_b:
             return {"success": False, "error": "snapshot not found"}
         return {

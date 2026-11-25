@@ -19,6 +19,10 @@ class ExpirePolicyService(BaseModuleService):
     ACTION_RULES = {"启效策略": "已生效", "启动清理": "清理中", "暂停策略": "已暂停"}
     NEGATIVE_ACTIONS = []
 
+    def __init__(self, engine=None) -> None:
+        # 灾备冲突检测需要落到具体存储引擎；默认全局单例
+        self._engine = engine or lake_store
+
     def identify_expired_snapshots(self, lake_table: str, keep_count: int,
                                    protected_tags: list[str] | None = None) -> list[str]:
         """识别过期快照：保留最近的 keep_count 个，其余标记过期但不含受保护标签。"""
@@ -45,3 +49,11 @@ class ExpirePolicyService(BaseModuleService):
             "released_bytes": released_bytes,
             "cleanup_time": time.time(),
         }
+
+    def reclaim_unreferenced_files(self, lake_table: str) -> dict[str, Any]:
+        """回收不再被可用/生成中快照引用的文件。
+
+        与灾备旧包恢复冲突的文件照常回收（接收方持有自包含的包可补数），
+        冲突明细记录在 dr_conflicts 中供对账。
+        """
+        return self._engine.reclaim_unreferenced_files(lake_table)
